@@ -22,23 +22,30 @@ Backspace to make room for disk access. The implementation uses 16-bit cells and
 CPU with BIOS services.
 
 Typing `boot` interprets the second physical sector of the boot disk.
-[bootstrap.f](bootstrap.f) currently uses 498 of the available 510 source
-bytes. It defines numeric constants `0` through `10`, basic stack and
-logic operations, and `load ( cylinder head sector -- )`. This loader
-replaces the current input buffer; a final load command can continue from
-another source sector. It does not preserve and resume an earlier source.
+[bootstrap.f](bootstrap.f) currently uses 509 of the available 510 source
+bytes. It defines the initial numeric constants, stack and logic operations,
+and a CHS source loader, then continues into the numbered files in
+[forth/](forth/README.md). That source chain installs logical loading,
+returning evaluation, decimal numeric input, and a small disk workbench.
+The original replacement loader remains available as `load-chs`; the final
+`load` interprets a 1,024-byte block and resumes its caller.
 
 The image builder packs one source file per sector, folds whitespace to
 spaces, and supplies padding and a space/NUL terminator. The default image
-contains the boot sector and bootstrap source, with the remaining sectors
-zero-filled. See [the README](README.md#bootstrapping-from-source) for
-current build and loading instructions.
+contains the boot sector, bootstrap, and numbered workbench source files.
+Logical sectors 64 onward hold saved workbench data and are preserved when
+the image is rebuilt. See [the README](README.md#bootstrapping-from-source)
+for current build and loading instructions, and
+[the minimal loader history](docs/history/minimal-loader.md) for the
+earlier CHS-only implementation.
 
 ## Loading infrastructure first
 
 Build the small foundation needed by the loader before expanding the full
 language. Keep the first sector complete and put these additions in loaded
-Forth source.
+Forth source. Initial implementations of phases A through D and a minimal
+phase E now exist: one block buffer, explicit saves, listing, and line
+replacement. The broader compatibility and editing work remains below.
 
 | Phase | Interfaces and machinery | Result |
 | --- | --- | --- |
@@ -94,11 +101,13 @@ their specified interfaces and any supporting double-cell arithmetic.
 
 ## Next implementation milestone
 
-Implement loading phases A through D first, adding only the language
-helpers each phase needs. Then use that infrastructure to carry the broader
-language stages above. The existing numeric constants can supply early
-addresses; a general numeric parser is not a prerequisite for improving
-loading.
+Use the loading infrastructure to carry the broader language stages above.
+The current implementation already adds the helpers required by the
+loaders and a decimal interpreter; extend those definitions toward standard
+semantics rather than installing parallel copies of the original examples.
+Validate the disk bridge on real hardware, add a disk retry policy, and
+improve recovery into the Forth input loop before treating the workbench as
+a finished standalone development system.
 
 Split these definitions into source files that load in dependency order.
 Keep each definition within a sector and reserve space for its continuation

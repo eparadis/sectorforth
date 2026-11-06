@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -53,16 +54,38 @@ class ImageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "boot sector"):
             builder.build_image(self.path, [ROOT / "bootstrap.f"])
 
+    def test_rebuild_preserves_saved_blocks(self):
+        image, _ = builder.build_image(ROOT / "sectorforth.bin", [ROOT / "bootstrap.f"])
+        start = builder.WORKBENCH_START * 512
+        image[start:start + 6] = b"saved!"
+        image[32 * 512:32 * 512 + 3] = b"old"
+        path = Path(self.work.name) / "saved.img"
+        path.write_bytes(image)
+        command = [sys.executable, str(ROOT / "tools/build_image.py"),
+                   str(ROOT / "sectorforth.bin"), str(path), str(ROOT / "bootstrap.f")]
+        subprocess.run(command, check=True, capture_output=True)
+        rebuilt = path.read_bytes()
+        self.assertEqual(rebuilt[start:], image[start:])
+        self.assertEqual(rebuilt[1024:start], bytes(start - 1024))
+        subprocess.run(command + ["--fresh"], check=True, capture_output=True)
+        self.assertEqual(path.read_bytes()[start:], bytes(len(image) - start))
+
+    def test_reserved_workbench_area(self):
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            builder.build_image(ROOT / "sectorforth.bin", [ROOT / "bootstrap.f"] * 64)
+        with self.assertRaisesRegex(ValueError, "wrong size"):
+            builder.build_image(ROOT / "sectorforth.bin", [ROOT / "bootstrap.f"], b"bad")
+
 
 class Qemu:
-    def __init__(self, work, image):
+    def __init__(self, work, image, readonly=True):
         self.work = work
         self.sequence = 0
         self.qmp = None
         self.log = (work / "qemu.log").open("w+")
         self.process = subprocess.Popen([
             "qemu-system-i386", "-machine", "pc", "-m", "16",
-            "-drive", f"file={image},format=raw,if=floppy,readonly=on",
+            "-drive", f"file={image},format=raw,if=floppy,readonly={'on' if readonly else 'off'}",
             "-boot", "a", "-display", "none", "-monitor", "none", "-serial", "none",
             "-qmp", f"unix:{work / 'qmp'},server=on,wait=off",
             "-no-reboot",
@@ -111,7 +134,12 @@ class Qemu:
         return self.command("human-monitor-command", {"command-line": text})
 
     def type(self, text):
-        names = {" ": "spc", "\n": "ret", "\b": "backspace"}
+        names = {" ": "spc", "\n": "ret", "\b": "backspace", ".": "dot",
+                 ":": "shift-semicolon", ";": "semicolon", "+": "shift-equal",
+                 "-": "minus", "@": "shift-2", "!": "shift-1", "<": "shift-comma",
+                 "=": "equal",
+                 ">": "shift-dot", "/": "slash", "?": "shift-slash",
+                 "[": "bracket_left", "]": "bracket_right", "'": "apostrophe"}
         for char in text:
             result = self.monitor(f"sendkey {names.get(char, char)} 10")
             if result:
@@ -126,8 +154,15 @@ class Qemu:
         chars = path.read_bytes()[::2]
         return "\n".join(chars[i:i + 80].decode("cp437") for i in range(0, 2000, 80))
 
-    def wait_for(self, text):
-        deadline = time.monotonic() + 10
+    def memory(self, address, count):
+        path = self.work / "memory.bin"
+        result = self.monitor(f'pmemsave {address} {count} "{path}"')
+        if result:
+            raise RuntimeError(result)
+        return path.read_bytes()
+
+    def wait_for(self, text, timeout=10):
+        deadline = time.monotonic() + timeout
         screen = ""
         while time.monotonic() < deadline:
             screen = self.screen()
@@ -135,6 +170,17 @@ class Qemu:
                 return screen
             time.sleep(0.05)
         raise AssertionError(f"screen never contained {text!r}:\n{screen}")
+
+    def prompt_after(self, output, timeout=30):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            screen = self.screen()
+            lines = screen.splitlines()
+            for index, line in enumerate(lines):
+                if line.startswith(output) and any(after.startswith("sf> ") for after in lines[index + 1:]):
+                    return screen
+            time.sleep(0.05)
+        raise AssertionError(f"no prompt after {output!r}:\n{screen}")
 
     def close(self):
         if self.process.poll() is None:
@@ -151,6 +197,97 @@ class Qemu:
 
 
 class EmulatorTests(unittest.TestCase):
+    def test_workbench_loading_and_persistence(self):
+        with tempfile.TemporaryDirectory(prefix="workbench-", dir=ROOT / "tmp") as directory:
+            work = Path(directory)
+            image = bytearray((ROOT / "sectorforth.img").read_bytes())
+            for lba, text in {
+                32: ": from32 1234 ; next-source",
+                33: ": from33 2345 ;",
+                34: "35 sector-evaluate 41",
+                35: ": nested 17 ; 1 2 +",
+                36: "101", 37: "202", 38: "303",
+                39: "39 sector-evaluate",
+                40: "blk @ 3 load blk @", 41: "blk @",
+            }.items():
+                source = work / f"sector-{lba}.f"
+                source.write_text(text)
+                image[lba * 512:(lba + 1) * 512] = builder.source_sector(source)[0]
+            path = work / "workbench.img"
+            path.write_bytes(image)
+            qemu = Qemu(work, path, readonly=False)
+            try:
+                qemu.wait_for("Booting from Floppy")
+                time.sleep(0.5)
+                qemu.type("boot\n")
+                qemu.wait_for("sf> ", timeout=60)
+                sequence = 9000
+
+                def check(command, output=""):
+                    nonlocal sequence
+                    sequence += 1
+                    qemu.type(f"{command} {sequence} .\n")
+                    return qemu.prompt_after(f"{output}{sequence} ")
+
+                check("2 3 + .", "5 ")
+                check("-32768 . 65535 u. space", "-32768 65535 ")
+                check("32 sector-evaluate from32 from33 + .", "3579 ")
+                check("0 1 15 chs>sector .", "32 ")
+                qemu.type("0 1 15 load-chs\n")
+                qemu.prompt_after("sf> 0 1 15 load-chs")
+                check("from32 from33 + .", "3579 ")
+                check("34 sector-evaluate + . nested .", "44 17 ")
+                check("36 38 sector-thru + + .", "606 ")
+                check("36 source-data read-sector . source-data 3 evaluate .", "0 101 ")
+                check("36 source-data read-sector drop source-data source-data 1+ 3 move source-data 1+ 3 type space", "101 ")
+                check(": compiled 12345 ; compiled .", "12345 ")
+                print("\n  logical, sequential, nested and range evaluation passed", flush=True)
+                check("1 blank-block")
+                qemu.type("0 1 edit-line\n")
+                qemu.wait_for("edit> ")
+                qemu.type("123 456 + . 99\n")
+                qemu.prompt_after("edit> 123 456 + . 99")
+                check("save-buffers flush 1 load .", "579 99 ")
+                self.assertEqual(path.read_bytes()[64 * 512:64 * 512 + 11], b"123 456 + .")
+                # Listing must preserve the stack, rather than execute the
+                # source and leave its trailing 99 on top of our sentinel.
+                check("777 1 list .", "777 ")
+                check("4 blank-block 40 source-data read-sector drop source-data 4 block 18 move update save-buffers")
+                check("3 blank-block 41 source-data read-sector drop source-data 3 block 5 move update save-buffers")
+                check("4 load + + .", "11 ")
+                check("3 4 thru + + + .", "14 ")
+                print("  editing, buffered saves and nested block loading passed", flush=True)
+                # Depth overflow must abort instead of overwriting reserved RAM.
+                qemu.type("39 sector-evaluate\n")
+                qemu.wait_for("!!", timeout=20)
+                qemu.type("workbench\n")
+                time.sleep(0.2)
+                check("eval-depth @ .", "1 ")  # the command itself is evaluated
+                check("1 load .", "579 99 ")
+            except BaseException:
+                print("\nWorkbench screen at failure:\n" + qemu.screen())
+                print(qemu.monitor("info registers"))
+                raise
+            finally:
+                qemu.close()
+            # A new machine must read the saved source from disk, not RAM cache.
+            qemu = Qemu(work, path)
+            try:
+                qemu.wait_for("Booting from Floppy")
+                time.sleep(0.5)
+                qemu.type("boot\n")
+                qemu.wait_for("sf> ", timeout=60)
+                qemu.type("1 load . 9876 .\n")
+                qemu.prompt_after("579 99 9876 ")
+                # BIOS write protection returns an error and restores BOOT code.
+                qemu.type("64 source-data write-sector 0= . 9877 .\n")
+                qemu.prompt_after("0 9877 ")
+                qemu.type("1 load . 9878 .\n")
+                qemu.prompt_after("579 99 9878 ")
+                print("  reboot persistence and write-protection checks passed", flush=True)
+            finally:
+                qemu.close()
+
     def test_boot_and_addressed_source_loading(self):
         (ROOT / "tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="qemu-", dir=ROOT / "tmp") as directory:

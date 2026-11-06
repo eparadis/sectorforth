@@ -246,13 +246,18 @@ DOCOL:
         ; to read other CHS addresses, then restores them after the read.
         defword "boot",BOOT
         xor bx,bx              ; ES:BX points to TIB
+.command:
         mov ax,0x0201          ; BIOS read, one sector
 .address:
         mov cx,2               ; cylinder 0, sector 2
 .drive: mov dx,0               ; head 0; DL patched at startup
+.io:
         int 0x13
+.status:
         jc error               ; failed read: existing error/reset path
+.input:
         mov [TOIN],bx          ; BIOS preserves BX=0: restart parsing
+.next:
         NEXT
 
         ; These offsets are the small interface used by bootstrap.f.
@@ -261,6 +266,12 @@ DOCOL:
 %endif
 %if BOOT.drive+1-BOOT != 9
     %error "bootstrap.f requires the DX operand at BOOT+9"
+%endif
+%if BOOT.command-BOOT != 2 || BOOT.io-BOOT != 11
+    %error "Forth raw disk I/O requires the original BOOT register setup"
+%endif
+%if BOOT.status-BOOT != 13 || BOOT.input-BOOT != 15 || BOOT.next-BOOT != 19
+    %error "Forth raw disk I/O requires BOOT status/input fields at 13/15"
 %endif
 
         ; Semicolon is the only immediate primitive. It writes the address
@@ -429,6 +440,10 @@ writechar:
         int 0x10
         ret
 
+        ; The loaded Forth also derives ERROR from BOOT's short forward JC.
+%if error-BOOT.status-2 < 0 || error-BOOT.status-2 > 127
+    %error "Forth error recovery requires a short forward BOOT failure branch"
+%endif
         times 510-($-$$) db 0
         db 0x55, 0xaa
 

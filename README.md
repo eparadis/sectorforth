@@ -19,15 +19,15 @@ manipulating the return stack, etc. can all be written in Forth itself
 The colon compiler (`:`) is available, so new words can be defined easily
 (that means `;` is also there, of course).
 
-Contrary to many Forth implementations, sectorforth does not attempt to
-convert unknown words to numbers, since numbers can be produced using the
-available primitives. The two included I/O primitives are sufficient to
-write a more powerful interpreter that can parse numbers.
+The first-sector interpreter does not convert unknown words to numbers.
+The source-loaded workbench adds decimal numeric input and literal
+compilation using those same primitives.
 
 Typing `boot` loads the second sector of the boot disk as Forth source.
 The included [bootstrap.f](bootstrap.f) builds numeric constants and a
 CHS-addressed source loader, so additional source sectors can extend the
-dictionary without loading binary instructions from disk.
+dictionary without loading binary instructions from disk. The default
+image continues through [forth/](forth/README.md) to a small disk workbench.
 
 ### Primitives
 
@@ -69,17 +69,21 @@ $ make
 That will produce a compiled binary (`sectorforth.bin`) and a floppy disk
 image (`sectorforth.img`) containing the binary in its boot sector.
 The image is a 1.44 MB floppy with `bootstrap.f` packed into its second
-sector. The boot sector remains exactly 512 bytes; later sectors contain
-ASCII source interpreted by that first-sector implementation.
+sector, followed by the numbered files in `forth/`. The boot sector remains
+exactly 512 bytes; the rest of the system arrives as interpreted ASCII
+source.
 
-To include further source files, list them in disk order:
+To append further source files after the workbench, list them in disk order:
 
 ```
-make SOURCE_SECTORS="bootstrap.f next.f more.f"
+make EXTRA_SOURCES="next.f more.f"
 ```
 
 Pass the same list to `run`, `gdb`, or `test`, since those targets rebuild
-the image, for example `make run SOURCE_SECTORS="bootstrap.f next.f more.f"`.
+the image, for example `make run EXTRA_SOURCES="next.f more.f"`. The builder
+prints both physical sector numbers and zero-based logical addresses.
+`SOURCE_SECTORS` can still override the complete source list for a custom
+bootstrap; the default numbered files must retain their order.
 
 Each file occupies one 512-byte sector. The builder converts whitespace
 to spaces, permits at most 510 source bytes after that conversion, and
@@ -88,6 +92,12 @@ or non-ASCII source rather than splitting definitions across sectors.
 It does not remove comments or understand quoted strings: use plain,
 space-delimited Forth source that the current dictionary can interpret.
 The commented files in `examples/` need preparation before packing.
+
+Logical sectors 0–63 are reserved for the rebuildable boot and source
+area. The workbench stores its blocks from logical sector 64 onward.
+Rebuilding preserves that data area, and `make clean` keeps the image.
+`make fresh-image` explicitly discards saved blocks and creates a fresh
+image. Do not rebuild an image while QEMU is using it.
 
 ## Running
 
@@ -104,72 +114,96 @@ the BIOS disk reader, keyboard input, and source chaining in headless QEMU.
 
 ## Usage
 
-Up to 4KB of input can be entered per line. After pressing return, the
-interpreter parses one word at a time an interprets it (i.e. executes it
-or compiles it, according to the current value of the `state` variable).
+After reset, the first-sector interpreter waits on a blank line with no
+readiness prompt. Click the QEMU display and enter lowercase `boot` once.
+It should echo there; the terminal running Make is not the guest keyboard.
+The default source chain has no progress display and took about 41 seconds
+in a local QEMU startup before displaying `sf> `. Wait for that prompt
+before entering more commands. The workbench accepts up to 4,094 characters
+per line, recognizes decimal integers, and compiles numeric literals:
 
-sectorforth does not print the ` ok` prompt familiar to Forth users.
-However, if a word is not found in the dictionary, the error message `!!`
-is printed in red, letting you know an error happened.
+```forth
+: answer 40 2 + ;
+answer .
+```
 
-When a word is not found in the dictionary, the interpreter's state is
-reset: the data and return stacks, as well as the terminal input buffer
-are cleared, and the interpreter is placed in interpretation mode. Other
-errors (e.g. compiling an invalid address in a word definition and
-attempting to execute it) are not handled gracefully, and will crash the
-interpreter.
+This prints `42`. Names remain case-sensitive. Backspace edits the current
+screen row; the block line editor stays within one row.
 
-The first-sector input routine ignores Backspace. Character echo, Enter,
-and newlines are supported; editing can be supplied by a later Forth input
-loop. This simplification makes room for the disk reader while retaining
-the original computational primitives and compiler.
+Errors print `!!` in red and return to the first-sector input loop.
+Enter `workbench` to resume the richer prompt. Completed dictionary
+entries and dirty block data remain in RAM; the data and return stacks
+and evaluation depth are reset. Reset the machine to repeat the complete
+bootstrap rather than replaying it into the existing dictionary.
+
+Invalid executable addresses and arbitrary memory corruption are still
+outside the interpreter's error handling.
+
+The first-sector input routine itself still ignores Backspace. Its minimal
+behavior makes room for disk access; editing and numeric interpretation
+are supplied by the loaded Forth source.
 
 ## Bootstrapping from source
 
-After starting the machine, enter:
+The default bootstrap installs these loading interfaces:
+
+| Word | Stack effects | Behavior |
+| --- | --- | --- |
+| `sector-load` | `( sector -- )` | Replace current input with one logical source sector. |
+| `next-source` | `( -- )` | Continue from the next logical sector of disk source being interpreted. |
+| `load-chs` | `( cylinder head sector -- )` | Source replacement using BIOS CHS coordinates. |
+| `evaluate` | `( address length -- )` | Interpret memory, then restore caller input and resume. |
+| `sector-evaluate` | `( sector -- )` | Interpret a source sector and return to the caller. |
+| `sector-thru` | `( first last -- )` | Interpret an inclusive logical-sector range in order. |
+
+Logical sector 0 is the boot sector, 1 contains `bootstrap.f`, and 2 starts
+the numbered foundation files. Source loaders reject sector 0. Appended
+source files currently start at logical sector 27; use the builder's output
+for the address if the core source count changes. For example, a file at
+sector 27 can be invoked with `27 sector-evaluate`. It can end with
+`next-source` to continue into the following file without embedding its
+address. `next-source` requires a disk-source context, not an arbitrary
+memory string or keyboard command.
+
+Returning evaluation preserves the caller's input and stack results and
+supports four active evaluation frames. The interactive command itself
+uses one frame. The maximum evaluated region is 4,094 bytes. See
+[the source implementation notes](forth/README.md) for the reserved RAM
+layout and remaining compatibility limits.
+
+## Disk workbench
+
+The workbench supplies `block`, `buffer`, `list`, returning `load`, `thru`,
+`update`, `save-buffers`, `flush`, `blank-block`, and `edit-line`.
+Block numbers 1–1,408 each address 1,024 bytes, starting at logical sector
+64. `load` now takes one block number; the original CHS operation has the
+distinct name `load-chs`.
+
+To write and run a small source block, enter:
 
 ```forth
-boot
+1 blank-block
+0 1 edit-line
 ```
 
-This silently interprets `bootstrap.f` and returns to keyboard input. It
-defines constants `0` through `10`, `dup`, `over`, `swap`, `and`, `2*`,
-`256*`, `ff` (255), and:
+At `edit> `, type `123 456 + .` and press Enter. Then enter:
 
 ```forth
-load ( cylinder head sector -- )
+save-buffers
+flush
+1 list
+1 load
 ```
 
-The stack annotation above is documentation, not text to type. With an
-image built using `bootstrap.f next.f more.f`, load `next.f` with:
+`list` displays the source without executing it; `load` prints `579`.
+The editor replaces a numbered line (0–15), with at most 64 characters.
+There is one block buffer: changing blocks saves dirty contents before
+reuse. `save-buffers` writes changes explicitly, and `flush` also drops the
+cached block. Saved blocks survive QEMU restarts and image rebuilds.
+There is no filesystem or full-screen editor yet.
 
-```forth
-0 0 3 load
-```
-
-That source can end with `0 0 4 load` to interpret `more.f`, continuing the
-bootstrap. Completed definitions remain in RAM across loads.
-
-Addresses use BIOS cylinder/head/sector coordinates, with a one-based
-sector number. For the 1.44 MB image, cylinders are 0–79, heads 0–1, and
-sectors 1–18. Physical sector 19 is `0 1 1 load`; physical sector 37 is
-`1 0 1 load`. There is no filesystem or general decimal-number parser yet:
-`0` through `10` are named constant words. Construct larger values using
-arithmetic, for example `0 0 9 2* load` for sector 18 on the first track.
-
-`boot` and `load` replace the current input buffer; any remaining text in
-that buffer is discarded. They do not save and resume a previous source
-like a nested standard Forth `LOAD`. Use loads in interpretation state,
-after completing any definitions. When a sector's source ends, keyboard
-input resumes. Disk errors print `!!` and reset the stacks and input,
-retaining completed dictionary entries and restoring `boot` to CHS 0/0/2.
-There are no automatic disk retries.
-
-The bootstrap loader is Forth source. It temporarily patches the native
-reader's CHS operands using `@` and `!`, calls `boot`, and restores its
-fixed address afterward. `(load)` and `(reset)` are internal helpers;
-the assembler checks their required operand offsets. The BIOS boot-drive
-number is retained, rather than assuming drive A:.
+The [minimal loader history](docs/history/minimal-loader.md) records the
+earlier CHS-only environment and its source-replacement behavior.
 
 The [development roadmap](ROADMAP.md) prioritizes logical loading,
 sequential source continuation, returning evaluation, and a disk workbench,

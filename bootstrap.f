@@ -19,3 +19,4 @@
 : (load) sp@ 4 + @ 256* over + rp@ @ @ 6 + ! sp@ ! 256* rp@ @ @ 9 + swap over @ ff and + swap ! sp@ ! rp@ @ @ ;
 : (reset) dup 6 + 2 swap ! 9 + dup @ ff and swap ! ;
 : load (load) boot (reset) ;
+0 0 3 load

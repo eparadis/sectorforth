@@ -1,0 +1,27 @@
+: drop sp@ ! ;
+: invert dup nand ;
+: negate invert 1 + ;
+: - negate + ;
+: = - 0= ;
+: <> = invert ;
+: 0<> 0= invert ;
+: 1+ 1 + ;
+: 1- 1 - ;
+: nip swap drop ;
+: 2dup over over ;
+: 2drop drop drop ;
+: or invert swap invert and invert ;
+: 16 8 2* ;
+: 18 9 2* ;
+: 32 16 2* ;
+: 64 32 2* ;
+: 128 64 2* ;
+: 256 1 256* ;
+: 512 256 2* ;
+: 1024 512 2* ;
+: 4096 1024 2* 2* ;
+: 32768 128 256* ;
+: c@ @ ff and ;
+: , here @ ! 2 here @ + here ! ;
+: lit rp@ @ dup 2 + rp@ ! @ ;
+0 0 4 load
