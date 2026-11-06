@@ -171,6 +171,9 @@ fixed address afterward. `(load)` and `(reset)` are internal helpers;
 the assembler checks their required operand offsets. The BIOS boot-drive
 number is retained, rather than assuming drive A:.
 
+The [development roadmap](ROADMAP.md) describes the next word sets,
+interpreter changes, and disk workbench planned beyond this bootstrap.
+
 ## Code structure
 
 Comments throughout the code assume familiarity with Forth and how it is
