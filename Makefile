@@ -1,5 +1,9 @@
 name = sectorforth
 PYTHON ?= python3
+QEMU ?= qemu-system-i386
+# QEMU's oldest CPU model is a 486. SeaBIOS gets 16 MB for regression
+# testing; the actual minimum target is an 8088 XT with 512 KB of RAM.
+QEMU_ARGS ?= -machine pc -cpu 486 -m 16M
 SOURCE_SECTORS ?= bootstrap.f $(sort $(wildcard forth/*.f)) $(EXTRA_SOURCES)
 
 all: $(name).bin $(name).img
@@ -12,10 +16,10 @@ $(name).img: $(name).bin tools/build_image.py $(SOURCE_SECTORS) FORCE
 
 .PHONY: all gdb run clean fresh-image test FORCE
 gdb: $(name).img
-	qemu-system-i386 -drive file=$<,format=raw,if=floppy -boot a -monitor stdio -s -S
+	$(QEMU) $(QEMU_ARGS) -drive file=$<,format=raw,if=floppy -boot a -monitor stdio -s -S
 
 run: $(name).img
-	qemu-system-i386 -drive file=$<,format=raw,if=floppy -boot a
+	$(QEMU) $(QEMU_ARGS) -drive file=$<,format=raw,if=floppy -boot a
 
 clean:
 	rm -f $(name).bin $(name).lst

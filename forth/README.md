@@ -4,6 +4,8 @@ The numbered `.f` files are the default source chain after `bootstrap.f`.
 Each file fits in one sector after whitespace folding and terminators.
 Keep the files in numeric order. The default image contains 27 sectors of
 boot and source code, followed by unused bootstrap space and workbench data.
+The platform target is an 8088 XT compatible with 512 KB of conventional
+RAM and an 80-column text display. The image is a 360 KB floppy.
 
 ## Example session
 
@@ -196,8 +198,10 @@ is an internal inline-cell reader, not standard `[']`.
 selecting an input source. Zero means success, BIOS AH status reports disk
 errors, and -1 reports an invalid logical address. Raw reads permit sector
 0; writes reject it. Callers supply valid buffers and must not overwrite
-live interpreter memory. Geometry is fixed at 80 cylinders, two heads, and
-18 sectors per track.
+live interpreter memory. Geometry is fixed at 40 cylinders, two heads, and
+nine sectors per track: logical sectors 0–719. `load-chs` accepts cylinders
+0–39, heads 0–1, and one-based sectors 1–9. Source loaders reject the boot
+sector even though raw reads permit it.
 
 The raw bridge reuses the boot sector's BIOS instruction sequence. It
 saves its first 19 bytes, temporarily substitutes stack-fed register setup
@@ -222,10 +226,19 @@ restoring the reader. The code assumes BIOS preservation of the Forth
 instruction pointer and return-stack register, as the existing reader does.
 There is no disk retry policy yet.
 
+The boot sector is assembled with `CPU 8086`, including an explicit
+snapshot of SP before pushing it for `sp@`, and register-based constant
+pushes. Its character output saves BP around `INT 10h` because original
+IBM BIOS scrolling uses that register. The disk bridge's instruction bytes
+already belong to the 8086/8088 instruction set. The kernel remains 512 bytes.
+
 ## Memory layout
 
 Addresses below are offsets in the kernel's segment, whose physical base
 is 0x0500. These fixed buffers do not allocate space in the dictionary.
+The platform assumes 512 KB is installed, but this runtime still uses one
+64 KB segment. Its data-stack origin is unchanged at `fffe`; a 64 KB-only
+original PC is outside the supported target.
 
 | Segment offsets | Use |
 | --- | --- |
@@ -246,7 +259,7 @@ dictionary/stack collision detection is still future work.
 ## Disk layout and persistence
 
 Logical sectors 0–63 form the rebuildable system area. Workbench block 1
-uses sectors 64 and 65; block 1,408 uses sectors 2,878 and 2,879. Block 0 is
+uses sectors 64 and 65; block 328 uses sectors 718 and 719. Block 0 is
 invalid. Source packing rejects a list that would enter the data area.
 
 `block` reads on a cache miss and saves a dirty block before eviction.
@@ -261,7 +274,9 @@ keyboard, then marks the block dirty. A 64-character line plus the editor
 prompt fits within the BIOS text row, including Backspace editing.
 
 The image builder preserves the data area when rebuilding an existing
-image. `make clean` removes assembler outputs but keeps the image;
+image. It also preserves fitting blocks when converting a previous 1.44 MB
+image, and refuses conversion if the truncated region contains nonzero
+data. `make clean` removes assembler outputs but keeps the image;
 `make fresh-image` intentionally erases saved blocks. Keep QEMU stopped
 while rebuilding its image.
 
@@ -285,3 +300,6 @@ and range evaluation, literal compilation, block editing and saves,
 nested block loading, reboot persistence, write protection, and preservation
 of saved data across image rebuilds. Real-hardware validation remains a
 separate step.
+QEMU uses a 486 model and 16 MB for SeaBIOS compatibility; it does not
+validate an 8088 or a 512 KB firmware environment. See
+[the XT platform notes](../docs/xt-platform.md).

@@ -26,7 +26,8 @@ class ImageTests(unittest.TestCase):
 
     def test_bootstrap_and_image_layout(self):
         image, sizes = builder.build_image(ROOT / "sectorforth.bin", [ROOT / "bootstrap.f"])
-        self.assertEqual(len(image), 1474560)
+        self.assertEqual(len(image), 368640)
+        self.assertEqual(builder.WORKBENCH_BLOCKS, 328)
         self.assertEqual(image[:512], (ROOT / "sectorforth.bin").read_bytes())
         self.assertEqual(image[510:512], b"\x55\xaa")
         self.assertEqual(image[1022:1024], b" \0")
@@ -76,15 +77,34 @@ class ImageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "wrong size"):
             builder.build_image(ROOT / "sectorforth.bin", [ROOT / "bootstrap.f"], b"bad")
 
+    def test_legacy_image_migration(self):
+        previous = bytearray(builder.LEGACY_IMAGE_SIZE)
+        start = builder.WORKBENCH_START * 512
+        previous[start:start + 6] = b"saved!"
+        image, _ = builder.build_image(ROOT / "sectorforth.bin", [ROOT / "bootstrap.f"], previous)
+        self.assertEqual(len(image), 368640)
+        self.assertEqual(image[start:], previous[start:len(image)])
+        previous[-1] = 1
+        with self.assertRaisesRegex(ValueError, "migrate those blocks"):
+            builder.build_image(ROOT / "sectorforth.bin", [ROOT / "bootstrap.f"], previous)
+        # CLI failure must leave the original image byte-for-byte intact.
+        path = Path(self.work.name) / "old.img"
+        path.write_bytes(previous)
+        result = subprocess.run([sys.executable, str(ROOT / "tools/build_image.py"),
+                                 str(ROOT / "sectorforth.bin"), str(path), str(ROOT / "bootstrap.f")],
+                                capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(path.read_bytes(), previous)
+
 
 class Qemu:
-    def __init__(self, work, image, readonly=True):
+    def __init__(self, work, image, readonly=True, cpu="486", memory="16M"):
         self.work = work
         self.sequence = 0
         self.qmp = None
         self.log = (work / "qemu.log").open("w+")
         self.process = subprocess.Popen([
-            "qemu-system-i386", "-machine", "pc", "-m", "16",
+            "qemu-system-i386", "-machine", "pc", "-cpu", cpu, "-m", memory,
             "-drive", f"file={image},format=raw,if=floppy,readonly={'on' if readonly else 'off'}",
             "-boot", "a", "-display", "none", "-monitor", "none", "-serial", "none",
             "-qmp", f"unix:{work / 'qmp'},server=on,wait=off",
@@ -152,7 +172,7 @@ class Qemu:
         if result:
             raise RuntimeError(result)
         chars = path.read_bytes()[::2]
-        return "\n".join(chars[i:i + 80].decode("cp437") for i in range(0, 2000, 80))
+        return "\n".join(chars[i:i + 80].decode("cp437").replace("\0", " ") for i in range(0, 2000, 80))
 
     def memory(self, address, count):
         path = self.work / "memory.bin"
@@ -230,11 +250,15 @@ class EmulatorTests(unittest.TestCase):
                     return qemu.prompt_after(f"{output}{sequence} ")
 
                 check("2 3 + .", "5 ")
+                check("0 0= . 1 0= . -1 0= . 32768 0= .", "-1 0 0 0 ")
+                check("123 dup + . 1 2 over + + .", "246 4 ")
+                check("disk-sectors . 328 block>sector .", "720 718 ")
+                check("719 source-data read-sector . 720 source-data read-sector .", "0 -1 ")
                 check("-32768 . 65535 u. space", "-32768 65535 ")
                 check("32 sector-evaluate from32 from33 + .", "3579 ")
-                check("0 1 15 chs>sector .", "32 ")
-                qemu.type("0 1 15 load-chs\n")
-                qemu.prompt_after("sf> 0 1 15 load-chs")
+                check("1 1 6 chs>sector .", "32 ")
+                qemu.type("1 1 6 load-chs\n")
+                qemu.prompt_after("sf> 1 1 6 load-chs")
                 check("from32 from33 + .", "3579 ")
                 check("34 sector-evaluate + . nested .", "44 17 ")
                 check("36 38 sector-thru + + .", "606 ")
@@ -256,6 +280,7 @@ class EmulatorTests(unittest.TestCase):
                 check("3 blank-block 41 source-data read-sector drop source-data 3 block 5 move update save-buffers")
                 check("4 load + + .", "11 ")
                 check("3 4 thru + + + .", "14 ")
+                check("328 blank-block save-buffers flush 328 load")
                 print("  editing, buffered saves and nested block loading passed", flush=True)
                 # Depth overflow must abort instead of overwriting reserved RAM.
                 qemu.type("39 sector-evaluate\n")
@@ -301,8 +326,8 @@ class EmulatorTests(unittest.TestCase):
                 (2, "third", 1, ""),
                 (3, "fourth", 4, "0 0 5 load"),
                 (4, "fifth", 5, ""),
-                (18, "otherhead", 2, ""),
-                (36, "othercylinder", 3, ""),
+                (9, "otherhead", 2, ""),
+                (18, "othercylinder", 3, ""),
             ):
                 path = work / f"{name}.f"
                 path.write_text(f": {name} 4 2* 2* 2* 2* {number} + emit ; {tail}")

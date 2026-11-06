@@ -18,8 +18,10 @@ diagnostics follows. Standard compatibility can then be checked against the
 The kernel assembled from [sectorforth.asm](sectorforth.asm) occupies
 exactly 512 bytes, including the boot signature. It retains the original
 computational primitives and colon compiler, adds `boot`, and ignores
-Backspace to make room for disk access. The implementation uses 16-bit cells and requires a 386 or newer
-CPU with BIOS services.
+Backspace to make room for disk access. The implementation uses 16-bit
+cells and targets an 8088 IBM XT compatible with 512 KB of conventional
+RAM and BIOS services. NASM enforces the 8086/8088 instruction set, and the
+default image uses 360 KB geometry. See [the XT platform notes](docs/xt-platform.md).
 
 Typing `boot` interprets the second physical sector of the boot disk.
 [bootstrap.f](bootstrap.f) currently uses 509 of the available 510 source
@@ -217,3 +219,10 @@ validation as the disk and console interfaces grow. Expand standard
 coverage by checking stack effects and behavior, rather than word names
 alone. A useful subset can serve the machine before full conformance is
 reached.
+
+The supported hardware baseline is XT class with 512 KB, rather than a
+64 KB original PC. Keep the current single-segment runtime until expanding
+its memory use serves a concrete feature. Validate on a genuine 8088
+emulator with an XT BIOS, including scrolling, head/cylinder transitions,
+and the last sector of the 360 KB image. QEMU remains a later-CPU regression
+environment, not an 8088 hardware certification.

@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Pack a boot sector and ASCII Forth source sectors into a 1.44 MB floppy."""
+"""Pack a boot sector and ASCII Forth source sectors into an XT 360 KB floppy."""
 
 import argparse
 from pathlib import Path
 
 SECTOR_SIZE = 512
-FLOPPY_SECTORS = 2880
+CYLINDERS = 40
+HEADS = 2
+SECTORS_PER_TRACK = 9
+FLOPPY_SECTORS = CYLINDERS * HEADS * SECTORS_PER_TRACK
 SOURCE_LIMIT = SECTOR_SIZE - 2
 WORKBENCH_START = 64
+WORKBENCH_BLOCKS = (FLOPPY_SECTORS - WORKBENCH_START) // 2
+LEGACY_IMAGE_SIZE = 2880 * SECTOR_SIZE
 
 
 def source_sector(path):
@@ -32,6 +37,13 @@ def build_image(boot_path, source_paths, previous=None):
     if len(source_paths) >= WORKBENCH_START:
         raise ValueError("source sectors overlap the workbench data area at LBA 64")
     image_size = SECTOR_SIZE * FLOPPY_SECTORS
+    if previous is not None and len(previous) == LEGACY_IMAGE_SIZE:
+        # The old 1.44 MB layout used the same data-area start. Preserve
+        # every block that fits, but never silently discard occupied blocks.
+        if any(previous[image_size:]):
+            raise ValueError("existing 1.44 MB image has data beyond the 360 KB capacity; "
+                             "migrate those blocks before rebuilding (the image was not changed)")
+        previous = previous[:image_size]
     if previous is not None and len(previous) != image_size:
         raise ValueError("existing image has the wrong size; use --fresh to replace it")
     image = bytearray(previous) if previous is not None else bytearray(image_size)

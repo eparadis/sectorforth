@@ -2,6 +2,12 @@
 
 sectorforth is a 16-bit x86 Forth that fits in a 512-byte boot sector.
 
+The minimum target is an **IBM XT compatible with an 8088 processor and
+512 KB of conventional RAM**, BIOS keyboard/video/disk services, and an
+80-column MDA or CGA text display. The default disk is a bootable 360 KB
+5.25-inch double-sided floppy: 40 cylinders, two heads, nine sectors per
+track, and 512 bytes per sector. DOS is not required.
+
 Inspiration to write sectorforth came from a 1996
 [Usenet thread](https://groups.google.com/g/comp.lang.forth/c/NS2icrCj1jQ)
 (in particular, Bernd Paysan's first post on the thread).
@@ -68,7 +74,7 @@ $ make
 
 That will produce a compiled binary (`sectorforth.bin`) and a floppy disk
 image (`sectorforth.img`) containing the binary in its boot sector.
-The image is a 1.44 MB floppy with `bootstrap.f` packed into its second
+The image is a 360 KB floppy with `bootstrap.f` packed into its second
 sector, followed by the numbered files in `forth/`. The boot sector remains
 exactly 512 bytes; the rest of the system arrives as interpreted ASCII
 source.
@@ -99,6 +105,11 @@ Rebuilding preserves that data area, and `make clean` keeps the image.
 `make fresh-image` explicitly discards saved blocks and creates a fresh
 image. Do not rebuild an image while QEMU is using it.
 
+An existing 1.44 MB image is converted to 360 KB only if the discarded
+region is entirely zero-filled. Saved blocks within the new capacity are
+preserved. If occupied blocks lie beyond that capacity, rebuilding stops
+without changing the image so those blocks can be migrated first.
+
 ## Running
 
 The makefile contains two targets for running sectorforth in QEMU:
@@ -111,6 +122,11 @@ set any breakpoints you want before sectorforth starts running.
 Both targets boot the complete image as a floppy. QEMU is required for
 these targets and for `make test`, which checks image packing and exercises
 the BIOS disk reader, keyboard input, and source chaining in headless QEMU.
+The QEMU regression guest uses a 486 CPU model and 16 MB because its
+bundled SeaBIOS does not boot with 512 KB. The 8088 instruction set is
+enforced by NASM; QEMU does not certify actual XT timing or BIOS behavior.
+See [the XT platform notes](docs/xt-platform.md) for the compatibility
+changes and validation limits.
 
 ## Usage
 
@@ -175,7 +191,7 @@ layout and remaining compatibility limits.
 
 The workbench supplies `block`, `buffer`, `list`, returning `load`, `thru`,
 `update`, `save-buffers`, `flush`, `blank-block`, and `edit-line`.
-Block numbers 1–1,408 each address 1,024 bytes, starting at logical sector
+Block numbers 1–328 each address 1,024 bytes, starting at logical sector
 64. `load` now takes one block number; the original CHS operation has the
 distinct name `load-chs`.
 

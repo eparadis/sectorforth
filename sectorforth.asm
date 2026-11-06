@@ -13,10 +13,11 @@
         ; The SP register is used as the data stack pointer, and the BP
         ; register acts as the return stack pointer.
         ;
-        ; The minimum CPU required to run sectorforth is the 386, to use
-        ; the SETNZ instruction.
+        ; Minimum target: an IBM XT compatible 8088 machine with 512 KB
+        ; of RAM and BIOS disk/video/keyboard services. CPU 8086 restricts
+        ; encodings to the instruction set shared by the 8086 and 8088.
         bits 16
-        cpu 386
+        cpu 8086
 
         ; Set CS to a known value by performing a far jump. Memory up to
         ; 0x0500 is used by the BIOS. Setting the segment to 0x0500 gives
@@ -97,7 +98,8 @@ word_%2:
         NEXT
 
         defword "sp@",SPFETCH
-        push sp
+        mov ax,sp               ; 8088 PUSH SP would push the decremented SP
+        push ax
         NEXT
 
         defword "rp@",RPFETCH
@@ -106,10 +108,8 @@ word_%2:
 
         defword "0=",ZEROEQUALS
         pop ax
-        test ax,ax
-        setnz al                ; AL=0 if ZF=1, else AL=1
-        dec ax                  ; AL=ff if AL=0, else AL=0
-        cbw                     ; AH=AL
+        cmp ax,1                ; unsigned AX<1 iff AX=0
+        sbb ax,ax               ; -1 when zero, otherwise 0
         push ax
         NEXT
 
@@ -141,16 +141,18 @@ word_%2:
         ; code that accesses the parse area can be written in an idiomatic
         ; fashion (e.g. TIB >IN @ +).
         defword "tib",TIBVAR
-        push word TIB
+        xor ax,ax               ; no immediate PUSH on the 8088; TIB is zero
+        push ax
         NEXT
 
         defword "state",STATEVAR
-        push word STATE
+        mov ax,STATE
+        push ax
         NEXT
 
         defword ">in",TOINVAR
-        push word TOIN
-        NEXT
+        mov ax,TOIN
+        push ax                 ; fall through directly into NEXT
 
         ; Strategically define next here so most jumps to it are short,
         ; saving extra bytes that would be taken by near jumps.
@@ -160,12 +162,14 @@ next:
 
         ; Words and data space for the HERE and LATEST variables.
         defword "here",HEREVAR
-        push word HERE
+        mov ax,HERE
+        push ax
         NEXT
 HERE:   dw start_HERE
 
         defword "latest",LATESTVAR
-        push word LATEST
+        mov ax,LATEST
+        push ax
         NEXT
 LATEST: dw word_SEMICOLON       ; initialized to last word in dictionary
 
@@ -324,7 +328,7 @@ init:
         ; Fill TIB with zeros, and set STATE and >IN to 0
         mov al,0
         mov cx,STATE+4
-        mov di,TIB
+        xor di,di               ; TIB starts at zero
         rep stosb
 
         ; Enter the interpreter loop.
@@ -359,7 +363,7 @@ interpreter:
         je .3                   ; if equal, search is over
 .2:     mov bx,[bx]             ; skip to next entry
         jmp .1                  ; try again
-.3:     mov ax,si               ; after comparison, SI points to code field
+.3:     xchg ax,si              ; AX gets code field; old AX is discarded
         mov si,.loop            ; set SI so NEXT loops back to interpreter
         ; Decide whether to interpret or compile the word. The IMMEDIATE
         ; flag is located in the most significant bit of the flags+length
@@ -413,7 +417,7 @@ token:
         call writechar          ; CR
         mov al,10
         call writechar          ; LF
-        mov di,TIB              ; read into TIB
+        xor di,di               ; read into TIB, at offset zero
 .1:     mov ah,0                ; wait until a key is pressed
         int 0x16
         cmp al,13               ; return pressed?
@@ -427,17 +431,19 @@ token:
         stosw                   ; put final delimiter and 0 in TIB
         call writechar          ; write a space between user input and
                                 ; execution output
-        mov word [TOIN],0       ; point >IN to start of TIB
+        xor ax,ax
+        mov [TOIN],ax          ; point >IN to start of TIB
         jmp token               ; try parsing a word again
 
         ; writechar writes a character to the screen. It uses INT 10/AH=0e
         ; to perform teletype output, writing the character, updating the
         ; cursor, and scrolling the screen. No line editing is provided.
 writechar:
-        mov bh,0                ; video page 0 for all BIOS calls
+        push bp                 ; original IBM BIOS scrolling destroys BP
+        mov bx,0x0007           ; page 0, light grey text on black
         mov ah,0x0e             ; teletype output
-        mov bl,0x7              ; black background, light grey text
         int 0x10
+        pop bp                  ; preserve the Forth return-stack pointer
         ret
 
         ; The loaded Forth also derives ERROR from BOOT's short forward JC.
