@@ -11,7 +11,7 @@ all: $(name).bin $(name).img
 	cat boot.img zero.img > $@
 	rm -f boot.img zero.img
 
-.PHONY: debug
+.PHONY: gdb
 gdb: $(name).bin
 	qemu-system-i386 -hda $^ -monitor stdio -s -S
 

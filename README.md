@@ -67,7 +67,7 @@ image (`sectorforth.img`) containing the binary in its boot sector.
 
 The makefile contains two targets for running sectorforth in QEMU:
 
-- `debug` starts QEMU in debug mode, with execution paused. That allows
+- `gdb` starts QEMU in debug mode, with execution paused. That allows
 you to set up a remote target in GDB (`target remote localhost:1234`) and
 set any breakpoints you want before sectorforth starts running.
 - `run` simply runs sectorforth in QEMU.
