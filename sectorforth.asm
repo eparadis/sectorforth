@@ -237,6 +237,32 @@ DOCOL:
         ; memory location.
 .addr:  dw DOCOL
 
+        ; BOOT replaces pending terminal input with the second physical
+        ; sector of the boot disk (CHS 0/0/2). The source sector must end
+        ; in a space and NUL. Ordinary threaded execution resumes before
+        ; the interpreter parses the new input; this is not nested LOAD.
+        ;
+        ; bootstrap.f temporarily patches the CX and DX immediate operands
+        ; to read other CHS addresses, then restores them after the read.
+        defword "boot",BOOT
+        xor bx,bx              ; ES:BX points to TIB
+        mov ax,0x0201          ; BIOS read, one sector
+.address:
+        mov cx,2               ; cylinder 0, sector 2
+.drive: mov dx,0               ; head 0; DL patched at startup
+        int 0x13
+        jc error               ; failed read: existing error/reset path
+        mov [TOIN],bx          ; BIOS preserves BX=0: restart parsing
+        NEXT
+
+        ; These offsets are the small interface used by bootstrap.f.
+%if BOOT.address+1-BOOT != 6
+    %error "bootstrap.f requires the CX operand at BOOT+6"
+%endif
+%if BOOT.drive+1-BOOT != 9
+    %error "bootstrap.f requires the DX operand at BOOT+9"
+%endif
+
         ; Semicolon is the only immediate primitive. It writes the address
         ; of EXIT to the end of a new word definition, makes the word
         ; visible in the dictionary, and switches back to interpretation
@@ -264,6 +290,8 @@ start:
         pop es
         pop ss
 
+        mov [BOOT.drive+1],dl   ; retain BIOS boot drive in the operand
+
         ; Skip error signaling on initialization
         jmp init
 
@@ -273,6 +301,8 @@ error:
         mov ax,0x0921           ; write '!'
         mov bx,0x0004           ; black background, red text
         mov cx,2                ; twice
+        mov [BOOT.address+1],cx ; restore fixed sector after a failed LOAD
+        mov [BOOT.drive+2],ch   ; head 0; keep the saved boot drive byte
         int 0x10
 
         ; Initialize stack pointers, state, and terminal input buffer.
@@ -378,17 +408,9 @@ token:
         cmp al,13               ; return pressed?
         je .3                   ; if so, finish reading
         cmp al,8                ; backspace pressed?
-        je .2                   ; if so, erase character
+        je .1                   ; ignore it; richer input comes from Forth
         call writechar          ; otherwise, write character to screen
         stosb                   ; store character in TIB
-        jmp .1                  ; keep reading
-.2:     cmp di,TIB              ; start of TIB?
-        je .1                   ; if so, there's nothing to erase
-        dec di                  ; erase character in TIB
-        call writechar          ; move cursor back one character
-        mov ax,0x0a20           ; erase without moving cursor
-        mov cx,1
-        int 0x10                ; (BH already set to 0 by writechar)
         jmp .1                  ; keep reading
 .3:     mov ax,0x0020
         stosw                   ; put final delimiter and 0 in TIB
@@ -399,28 +421,13 @@ token:
 
         ; writechar writes a character to the screen. It uses INT 10/AH=0e
         ; to perform teletype output, writing the character, updating the
-        ; cursor, and scrolling the screen, all in one go. Writing
-        ; backspace using the BIOS only moves the cursor backwards within
-        ; a line, but does not move it back to the previous line.
-        ; writechar addresses that.
+        ; cursor, and scrolling the screen. No line editing is provided.
 writechar:
-        push ax                 ; INT 10h/AH=03h clobbers AX in some BIOSes
         mov bh,0                ; video page 0 for all BIOS calls
-        mov ah,3                ; get cursor position (DH=row, DL=column)
-        int 0x10
-        pop ax                  ; restore AX
         mov ah,0x0e             ; teletype output
         mov bl,0x7              ; black background, light grey text
         int 0x10
-        cmp al,8                ; backspace?
-        jne .1                  ; if not, nothing else to do
-        test dl,dl              ; was cursor in first column?
-        jnz .1                  ; if not, nothing else to do
-        mov ah,2                ; move cursor
-        mov dl,79               ; to last column
-        dec dh                  ; of previous row
-        int 0x10
-.1:     ret
+        ret
 
         times 510-($-$$) db 0
         db 0x55, 0xaa

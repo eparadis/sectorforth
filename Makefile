@@ -1,24 +1,27 @@
 name = sectorforth
+PYTHON ?= python3
+SOURCE_SECTORS ?= bootstrap.f
 
 all: $(name).bin $(name).img
 
 %.bin: %.asm
 	nasm -f bin -o $@ -l $(^:.asm=.lst) $^
 
-%.img: %.bin
-	dd if=$^ of=boot.img bs=512
-	dd if=/dev/zero of=zero.img bs=512 count=2879
-	cat boot.img zero.img > $@
-	rm -f boot.img zero.img
+$(name).img: $(name).bin tools/build_image.py $(SOURCE_SECTORS) FORCE
+	$(PYTHON) tools/build_image.py $(name).bin $@ $(SOURCE_SECTORS)
 
-.PHONY: gdb
-gdb: $(name).bin
-	qemu-system-i386 -hda $^ -monitor stdio -s -S
+.PHONY: all gdb run clean test FORCE
+gdb: $(name).img
+	qemu-system-i386 -drive file=$<,format=raw,if=floppy -boot a -monitor stdio -s -S
 
-.PHONY: run
-run: $(name).bin
-	qemu-system-i386 -hda $^
+run: $(name).img
+	qemu-system-i386 -drive file=$<,format=raw,if=floppy -boot a
 
-.PHONY: clean
 clean:
-	rm -rf *.{bin,lst,img}
+	rm -f $(name).bin $(name).lst $(name).img
+
+test: all
+	$(PYTHON) tests/test_boot.py
+
+# The source-file list can change without any file timestamps changing.
+FORCE:
