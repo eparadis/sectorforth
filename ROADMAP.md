@@ -6,17 +6,19 @@ supplies the interpreter, compiler, primitives, and enough disk access to
 interpret further Forth source. Higher-level capabilities continue to
 arrive as text, rather than requiring a binary second-stage kernel.
 
-The first major goal is a Forth-written interpreter with arbitrary numeric
-input, literal compilation, editable input, and useful diagnostics. Standard
-compatibility can then be expanded and checked against the
+The immediate goal is to make loading the rest of the system simpler:
+logical sector addressing, sequential continuation, returning source
+evaluation, and a small disk workbench. A Forth-written interpreter with
+arbitrary numeric input, literal compilation, editable input, and useful
+diagnostics follows. Standard compatibility can then be checked against the
 [Forth standard](https://forth-standard.org/standard/core).
 
 ## Current starting environment
 
 The kernel assembled from [sectorforth.asm](sectorforth.asm) occupies
 exactly 512 bytes, including the boot signature. It retains the original
-computational primitives and colon compiler, adds `boot`, and ignores Backspace to make room for disk
-access. The implementation uses 16-bit cells and requires a 386 or newer
+computational primitives and colon compiler, adds `boot`, and ignores
+Backspace to make room for disk access. The implementation uses 16-bit cells and requires a 386 or newer
 CPU with BIOS services.
 
 Typing `boot` interprets the second physical sector of the boot disk.
@@ -32,7 +34,45 @@ contains the boot sector and bootstrap source, with the remaining sectors
 zero-filled. See [the README](README.md#bootstrapping-from-source) for
 current build and loading instructions.
 
-## Proposed implementation stages
+## Loading infrastructure first
+
+Build the small foundation needed by the loader before expanding the full
+language. Keep the first sector complete and put these additions in loaded
+Forth source.
+
+| Phase | Interfaces and machinery | Result |
+| --- | --- | --- |
+| A. Minimal foundation | Only the stack, memory, literal, branch, and storage helpers needed below | Enough machinery for address conversion, source state, and bounded loops. |
+| B. Logical and sequential loading | Preserve `load-chs`; add `sector-load ( sector -- )`, current-source tracking, and `next-source ( -- )` | Source files stop embedding CHS coordinates and their successors' physical addresses. |
+| C. Returning source evaluation | Bounded interpretation of a memory region; saved input and execution state; `EVALUATE` | A caller resumes after the loaded source finishes; nested evaluation becomes possible. |
+| D. Readable disk workbench | Separate raw sector reads from interpretation; add source inspection and returning sector/range loading | Modules can load other modules, ranges interpret every member, and disk contents can be inspected without executing them. |
+| E. Writable disk workbench | Disk writes, buffers, explicit saves, then a source editor | The user can develop and preserve source directly on the machine. |
+
+Use zero-based logical disk sectors: sector 0 contains the boot code,
+sector 1 contains `bootstrap.f`, and sector 2 contains the next source.
+Source-loading interfaces must reject sector 0. Keep BIOS CHS conversion
+underneath those interfaces and distinguish these 512-byte sectors from
+future standard 1,024-character blocks.
+
+`NEXT-SOURCE` initially replaces the current input, just like the existing
+loader. It tracks the current logical source sector and advances it before
+loading. Each bootstrap source can end with the same continuation command;
+moving a group of sectors then changes its starting address rather than
+every link in the chain.
+
+Do not implement a range loader by repeatedly calling the current `load`
+inside a loop. That word returns before the replacement text is interpreted,
+so subsequent reads overwrite source that has not run. A range needs
+returning evaluation, a refill mechanism, or a combined source buffer.
+Phase C establishes returning evaluation before phase D exposes that
+interface.
+
+Raw reads should eventually take a logical sector and destination address
+and return an I/O result, without changing the input source. The current
+reader fixes its destination and resets the interpreter on failure; this
+separation requires implementation work, not just a new name.
+
+## Later language expansion stages
 
 These stages describe dependencies and useful capabilities, not fixed
 sector assignments. A stage can span several source sectors.
@@ -54,19 +94,27 @@ their specified interfaces and any supporting double-cell arithmetic.
 
 ## Next implementation milestone
 
-Implement stages 1 through 3 first. Conditionals, loops, and literal
-compilation make a numeric parser much easier to write; the existing
-numeric constants can carry the bootstrap until then.
+Implement loading phases A through D first, adding only the language
+helpers each phase needs. Then use that infrastructure to carry the broader
+language stages above. The existing numeric constants can supply early
+addresses; a general numeric parser is not a prerequisite for improving
+loading.
 
 Split these definitions into source files that load in dependency order.
-Keep each definition within a sector and reserve space for the command
-that loads the next one. Continue using the current CHS loader until the
-new input system can support a richer loading interface.
+Keep each definition within a sector and reserve space for its continuation
+command. Use explicit CHS continuation only to establish logical loading;
+subsequent bootstrap sectors should use `NEXT-SOURCE`.
 
-Verify the new foundation in QEMU with stack-effect checks, both branches
-of conditionals, terminating loops, balanced return-stack operations, and
-definitions compiled across successive source sectors. Retain the existing
-disk-loading and error-recovery checks. Exercise arithmetic boundary cases
+Verify logical addressing across track and cylinder boundaries, sequential
+continuation after relocation, and rejection of invalid source addresses.
+Returning evaluation must preserve caller input, stack results, and
+execution order, including nested loads and definitions compiled from
+source. Inspection must not execute the inspected source. Retain disk-error
+recovery checks and add a save/reload test before enabling writes.
+
+Verify new language helpers with stack-effect checks, both branches of
+conditionals, terminating loops, and balanced return-stack operations.
+Exercise arithmetic boundary cases
 when comparisons and division are added; subtraction followed by a sign
 test alone does not correctly implement every signed comparison.
 
